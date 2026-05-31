@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interactive Room</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #1a1a1a;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.167.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    // Scene
+    const scene = new THREE.Scene();
+
+    // Camera — fixed, no orbit controls
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 5);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0xffffff, 1.5);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+
+    function makeVideoMaterial(src) {
+      const video = document.createElement('video');
+      video.src = src;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+      video.play().catch(() => {});
+
+      const texture = new THREE.VideoTexture(video);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.flipY = false;
+
+      return new THREE.MeshBasicMaterial({
+        map: texture,
+        side: THREE.DoubleSide,
+        transparent: true,
+        depthWrite: false,
+      });
+    }
+
+    const mat1 = makeVideoMaterial('video1.webm');
+    const mat2 = makeVideoMaterial('video2.webm');
+
+    // GLB loader
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/libs/draco/');
+
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
+
+    const pivot = new THREE.Group();
+    scene.add(pivot);
+
+    loader.load('Room.glb', (gltf) => {
+      const model = gltf.scene;
+
+      // Center the model
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      // Fit camera — elevated and slightly right for isometric feel
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      camera.position.set(maxDim * 0.25, maxDim * 0.45, maxDim * 1.5);
+      camera.lookAt(0, 0, 0);
+
+      // Apply video textures to video1 / video2 meshes
+      model.traverse((node) => {
+        if (!node.isMesh) return;
+        const name = node.name.toLowerCase();
+        if (name === 'video1') {
+          node.material = mat1;
+        } else if (name === 'video2') {
+          node.material = mat2;
+        }
+      });
+
+      pivot.add(model);
+    }, undefined, (err) => {
+      console.error('GLB load error:', err);
+    });
+
+    // Cursor interaction — subtle tilt only, no zoom/orbit
+    const mouse = new THREE.Vector2();
+    const targetRotation = new THREE.Vector2();
+    const currentRotation = new THREE.Vector2();
+    const MAX_ANGLE = 0.12; // radians (~7°)
+    const LERP = 0.06;
+
+    window.addEventListener('mousemove', (e) => {
+      // Normalize -1 to +1
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = (e.clientY / window.innerHeight) * 2 - 1;
+      targetRotation.x = -mouse.y * MAX_ANGLE;
+      targetRotation.y =  mouse.x * MAX_ANGLE;
+    });
+
+    // Touch support
+    window.addEventListener('touchmove', (e) => {
+      const t = e.touches[0];
+      mouse.x = (t.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = (t.clientY / window.innerHeight) * 2 - 1;
+      targetRotation.x = -mouse.y * MAX_ANGLE;
+      targetRotation.y =  mouse.x * MAX_ANGLE;
+    }, { passive: true });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Render loop
+    function animate() {
+      requestAnimationFrame(animate);
+      currentRotation.x += (targetRotation.x - currentRotation.x) * LERP;
+      currentRotation.y += (targetRotation.y - currentRotation.y) * LERP;
+      pivot.rotation.x = currentRotation.x;
+      pivot.rotation.y = currentRotation.y;
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
