@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interactive Room</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #1a1a1a;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.167.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    // Scene
+    const scene = new THREE.Scene();
+
+    // Camera — fixed, no orbit controls (orthographic)
+    let frustumSize = 5;
+    const camera = new THREE.OrthographicCamera(
+      (frustumSize * (window.innerWidth / window.innerHeight)) / -2,
+      (frustumSize * (window.innerWidth / window.innerHeight)) / 2,
+      frustumSize / 2,
+      frustumSize / -2,
+      0.1,
+      100
+    );
+    camera.position.set(0, 0, 5);
+
+    function updateCameraFrustum() {
+      const aspect = window.innerWidth / window.innerHeight;
+      camera.left = (frustumSize * aspect) / -2;
+      camera.right = (frustumSize * aspect) / 2;
+      camera.top = frustumSize / 2;
+      camera.bottom = frustumSize / -2;
+      camera.updateProjectionMatrix();
+    }
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.9;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // Environment map — soft studio-style reflections/lighting for PBR materials
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 0.4;
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0xffffff, 0.15);
+    scene.add(ambient);
+
+    const hemi = new THREE.HemisphereLight(0xbfd6ff, 0x4a3a2c, 0.25);
+    scene.add(hemi);
+
+    // Key light — main shadows, slightly warm
+    const keyLight = new THREE.DirectionalLight(0xfff2e0, 1);
+    keyLight.position.set(6, 9, 6);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.bias = -0.0005;
+    scene.add(keyLight);
+
+    // Fill light — softer, cool, opposite side, lifts the shadows a little
+    const fillLight = new THREE.DirectionalLight(0xcfe0ff, 0.25);
+    fillLight.position.set(-6, 3, -4);
+    scene.add(fillLight);
+
+    // Rim light — separates the model from the background
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    rimLight.position.set(-3, 6, -8);
+    scene.add(rimLight);
+
+    const textureLoader = new THREE.TextureLoader();
+
+    function makeImageMaterial(src) {
+      const texture = textureLoader.load(src);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.flipY = false;
+
+      return new THREE.MeshBasicMaterial({
+        map: texture,
+        side: THREE.DoubleSide,
+        transparent: true,
+        depthWrite: false,
+      });
+    }
+
+    const mat1 = makeImageMaterial('photo1.png');
+    const mat2 = makeImageMaterial('photo2.png');
+
+    // GLB loader
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/libs/draco/');
+
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
+
+    const pivot = new THREE.Group();
+    scene.add(pivot);
+
+    loader.load('Room.glb', (gltf) => {
+      const model = gltf.scene;
+
+      // Center the model
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      // Fit camera — elevated and slightly right for isometric feel
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      frustumSize = maxDim * 1.2;
+      updateCameraFrustum();
+
+      // Size the key light's shadow frustum to the model
+      const shadowExtent = maxDim * 1.2;
+      keyLight.shadow.camera.left = -shadowExtent;
+      keyLight.shadow.camera.right = shadowExtent;
+      keyLight.shadow.camera.top = shadowExtent;
+      keyLight.shadow.camera.bottom = -shadowExtent;
+      keyLight.shadow.camera.near = 0.1;
+      keyLight.shadow.camera.far = maxDim * 5;
+      keyLight.shadow.camera.updateProjectionMatrix();
+      // Frontal camera, slightly elevated, centered on X — so the cursor-tilt
+      // rotation lifts/lowers both sides of the scene evenly.
+      camera.position.set(0, maxDim * 0.45, maxDim * 1.5);
+      camera.lookAt(0, 0, 0);
+
+      // Turn the room itself (instead of moving the camera) so the photo
+      // panels face the camera. Tweak this angle to taste.
+      model.rotation.y = THREE.MathUtils.degToRad(-40.5);
+
+      // Apply photo textures to video1 / video2 meshes, set up shadows
+      model.traverse((node) => {
+        if (!node.isMesh) return;
+        const name = node.name.toLowerCase();
+        if (name === 'photo1') {
+          node.material = mat1;
+        } else if (name === 'photo2') {
+          node.material = mat2;
+        }
+
+        // The two transparent photo panels shouldn't cast (square) shadows.
+        // GLTFLoader strips dots from names, so "Plane.001" becomes "Plane001".
+        if (name === 'plane' || name === 'plane001') {
+          node.castShadow = false;
+        } else {
+          node.castShadow = true;
+        }
+        node.receiveShadow = true;
+      });
+
+      pivot.add(model);
+    }, undefined, (err) => {
+      console.error('GLB load error:', err);
+    });
+
+    // Cursor interaction — subtle tilt only, no zoom/orbit
+    const mouse = new THREE.Vector2();
+    const targetRotation = new THREE.Vector2();
+    const currentRotation = new THREE.Vector2();
+    const MAX_ANGLE = 0.12; // radians (~7°)
+    const LERP = 0.06;
+
+    window.addEventListener('mousemove', (e) => {
+      // Normalize -1 to +1
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = (e.clientY / window.innerHeight) * 2 - 1;
+      targetRotation.x = -mouse.y * MAX_ANGLE;
+      targetRotation.y =  mouse.x * MAX_ANGLE;
+    });
+
+    // Touch support
+    window.addEventListener('touchmove', (e) => {
+      const t = e.touches[0];
+      mouse.x = (t.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = (t.clientY / window.innerHeight) * 2 - 1;
+      targetRotation.x = -mouse.y * MAX_ANGLE;
+      targetRotation.y =  mouse.x * MAX_ANGLE;
+    }, { passive: true });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      updateCameraFrustum();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Render loop
+    function animate() {
+      requestAnimationFrame(animate);
+      currentRotation.x += (targetRotation.x - currentRotation.x) * LERP;
+      currentRotation.y += (targetRotation.y - currentRotation.y) * LERP;
+      pivot.rotation.x = currentRotation.x;
+      pivot.rotation.y = currentRotation.y;
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
